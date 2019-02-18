@@ -1,13 +1,13 @@
 from telegram.ext import Updater, CommandHandler
+import feedparser
 import json
 import re
 
 config_file = open("config.json")
 config = json.load(config_file)
 
-def hello(bot, update):
-    update.message.reply_text(
-        'Hello {}'.format(update.message.from_user.first_name))
+# TODO: Is there a better place to store this than in a global?
+feed_heads = {}
 
 # TODO: Implement social reminder 
 def remind_me(bot, update):
@@ -48,15 +48,31 @@ def callback_remind(bot, job):
     bot.send_message(chat_id=config["channel_id"],
                      text=job.context)
 
-        
+def callback_git_feed(bot, job):
+    for feed_url in config["git_feeds"]:
+        feed = feedparser.parse(feed_url)
+        try:
+            same_head = feed_heads[feed["feed"]["id"]] == feed["entries"][0]["id"]
+        except KeyError:
+            same_head = False
+            feed_heads[feed["feed"]["id"]] = feed["entries"][0]["id"]
+        if not same_head:
+            alert = "{} added a new commit to {}: {}\n {}".format(
+                feed["entries"][0]["author"],
+                feed['feed']['title'].split("to")[1].strip(),
+                feed["entries"][0]["title"],
+                feed["entries"][0]["link"])
+            bot.send_message(chat_id=config["channel_id"],
+                             text=alert)
+            
 def callback_30(bot, job):
     bot.send_message(chat_id=config["channel_id"], 
                      text='A single message with 30s delay')
 
 updater = Updater(config["bot_api_key"])
 
-updater.dispatcher.add_handler(CommandHandler('hello', hello))
 updater.dispatcher.add_handler(CommandHandler('remind', remind_me))
+updater.job_queue.run_repeating(callback_git_feed, interval=(60*5), first=0)
 
 updater.start_polling()
 updater.idle()
