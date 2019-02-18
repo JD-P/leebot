@@ -35,6 +35,14 @@ def remind_me(bot, update):
                                (hours * 60 * 60) +
                                (days * 24 * 60 * 60),
                                context=reminder_string.strip())
+    feedback = ("Your reminder for {} minutes, " +
+                "{} hours and {} days from now: " + 
+                "'{}' has been registered!").format(minutes,
+                                                    hours,
+                                                    days,
+                                                    reminder_string)
+    bot.send_message(chat_id=update.message.from_user.id,
+                     text=feedback)
     
 def callback_remind(bot, job):
     bot.send_message(chat_id=config["channel_id"],
