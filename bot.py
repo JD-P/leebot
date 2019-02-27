@@ -70,11 +70,30 @@ def validate_feed_add(command: str) -> tuple:
     
 def add_feed(bot, update):
     try:
-        (feed_type, url) = do_add_feed(update.message.text)
+        is_admin = update.message.from_user.id == config["admin_id"]
+    except KeyError:
+        update.message.reply_text("There is no administrator configured. " +
+                                  "Set one by adding a telegram account ID under " +
+                                  "the admin_id config parameter." +
+                                  "\n\nYour id is {}".format(
+                                      update.message.from_user.id))
+        return
+    try:
+        (feed_type, url) = validate_feed_add(update.message.text)
+        config[feed_type].append(url)
+    except KeyError as e:
+        config[feed_type] = []
         config[feed_type].append(url)
     except ValueError as e:
         update.message.reply_text(str(e))
-    
+
+    try:
+        feed_title = feedparser.parse(url)["feed"]["title"]
+        update.message.reply_text("Your feed '{}' has been added!".format(feed_title))
+    except:
+        config[feed_type].pop()
+        update.message.reply_text("Your feed link '{}' could not be parsed.".format(url))
+        
 def do_shutdown():
     updater.stop()
     updater.is_idle = False
@@ -117,12 +136,24 @@ def callback_remind(bot, job):
 def check_feed(feed: dict,
                feed_heads: dict,
                alert_gen: Callable[[dict],str]) -> tuple:
+    # TODO: This is very ugly code, refactor probably in order
     try:
         same_head = feed_heads[feed["feed"]["id"]] == feed["entries"][0]["id"]
     except KeyError:
         same_head = False
+    # Still check for same head if using alternative identifier
+    try:
+        if not same_head:
+            same_head = feed_heads[feed["feed"]["title_detail"]["base"]] == feed["entries"][0]["id"]
+    except KeyError:
+        same_head = False
     if not same_head:
-        feed_heads[feed["feed"]["id"]] = feed["entries"][0]["id"]
+        try:
+            feed_heads[feed["feed"]["id"]] = feed["entries"][0]["id"]
+        except KeyError:
+            # Alternate identifier in case feed ID not given
+            # This should evaluate to a URL
+            feed_heads[feed["feed"]["title_detail"]["base"]] = feed["entries"][0]["id"]
         alert = alert_gen(feed)
     else:
         alert = None
@@ -145,7 +176,9 @@ def callback_feeds(bot, job):
     global FEED_HEADS
     for feed_url in job.context["feeds"]:
         feed = feedparser.parse(feed_url)
-        (alert, feed_heads) = check_feed(feed, FEED_HEADS, git_alert)
+        (alert, feed_heads) = check_feed(feed,
+                                         FEED_HEADS,
+                                         job.context["alert_callback"])
         if alert:
             FEED_HEADS = feed_heads
             bot.send_message(chat_id=config["channel_id"],
@@ -167,15 +200,18 @@ if __name__ == '__main__':
 
     updater.dispatcher.add_handler(CommandHandler('remind', remind_me))
     updater.dispatcher.add_handler(CommandHandler('shutdown', shutdown))
+    updater.dispatcher.add_handler(CommandHandler('addfeed', add_feed))
     try:
         updater.job_queue.run_repeating(callback_feeds, interval=(60*5),
-                                        context={"feeds":config["git_feeds"]},
+                                        context={"feeds":config["git_feeds"],
+                                                 "alert_callback":git_alert},
                                         first=0)
     except KeyError:
         pass
     try:
         updater.job_queue.run_repeating(callback_feeds, interval=(60*10),
-                                        context={"feeds":config["blog_feeds"]},
+                                        context={"feeds":config["blog_feeds"],
+                                                 "alert_callback":blog_alert},
                                         first=0)
     except KeyError:
         pass
