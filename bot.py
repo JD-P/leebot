@@ -1,4 +1,6 @@
 from telegram.ext import Updater, CommandHandler
+from typing import Callable
+from urllib.parse import urlparse
 import threading
 import feedparser
 import json
@@ -51,6 +53,28 @@ def remind_me(bot, update):
     bot.send_message(chat_id=update.message.from_user.id,
                      text=feedback)
 
+
+def validate_feed_add(command: str) -> tuple:
+    args = command.split(" ")
+    feed_type = args[1]
+    url = args[2]
+    url_components = urlparse(url)
+    # Verify that it's a real url
+    if not (url_components.scheme and url_components.netloc):
+        raise ValueError("'{}' does not seem to be a url.".format(url))
+    # Prevent arbitrary modification of config options
+    if feed_type not in ["git_feeds","blog_feeds"]:
+        raise ValueError("Improper feed type '{}'".format(feed_type))
+    else:
+        return(feed_type, url)
+    
+def add_feed(bot, update):
+    try:
+        (feed_type, url) = do_add_feed(update.message.text)
+        config[feed_type].append(url)
+    except ValueError as e:
+        update.message.reply_text(str(e))
+    
 def do_shutdown():
     updater.stop()
     updater.is_idle = False
@@ -89,33 +113,44 @@ def shutdown(bot, update):
 def callback_remind(bot, job):
     bot.send_message(chat_id=config["channel_id"],
                      text=job.context)
-
-def check_git_feed(feed, feed_heads):
+    
+def check_feed(feed: dict,
+               feed_heads: dict,
+               alert_gen: Callable[[dict],str]) -> tuple:
     try:
         same_head = feed_heads[feed["feed"]["id"]] == feed["entries"][0]["id"]
     except KeyError:
         same_head = False
     if not same_head:
         feed_heads[feed["feed"]["id"]] = feed["entries"][0]["id"]
-        alert = "{} added a new commit to {}: {}\n {}".format(
-            feed["entries"][0]["author"],
-            feed['feed']['title'].split("to")[1].strip(),
-            feed["entries"][0]["title"],
-            feed["entries"][0]["link"])
+        alert = alert_gen(feed)
     else:
         alert = None
     return alert, feed_heads
-    
-def callback_git_feed(bot, job):
+
+def git_alert(feed):
+    return "{} added a new commit to {}: {}\n {}".format(
+        feed["entries"][0]["author"],
+        feed['feed']['title'].split("to")[1].strip(),
+        feed["entries"][0]["title"],
+        feed["entries"][0]["link"])
+
+def blog_alert(feed):
+    return "[{}]\n{}\n\n{}".format(
+        feed["feed"]["title"],
+        feed["entries"][0]["title"],
+        feed["entries"][0]["link"])
+
+def callback_feeds(bot, job):
     global FEED_HEADS
-    for feed_url in config["git_feeds"]:
+    for feed_url in job.context["feeds"]:
         feed = feedparser.parse(feed_url)
-        (alert, feed_heads) = check_git_feed(feed, FEED_HEADS)
+        (alert, feed_heads) = check_feed(feed, FEED_HEADS, git_alert)
         if alert:
             FEED_HEADS = feed_heads
             bot.send_message(chat_id=config["channel_id"],
                              text=alert)
-
+            
 def callback_auto_save(bot, job):
     """Autosave the bot state so it's not lost if improper shutdown occurs."""
     # If/when this becomes more complex, split logic off into own function and test
@@ -132,7 +167,18 @@ if __name__ == '__main__':
 
     updater.dispatcher.add_handler(CommandHandler('remind', remind_me))
     updater.dispatcher.add_handler(CommandHandler('shutdown', shutdown))
-    updater.job_queue.run_repeating(callback_git_feed, interval=(60*5), first=0)
+    try:
+        updater.job_queue.run_repeating(callback_feeds, interval=(60*5),
+                                        context={"feeds":config["git_feeds"]},
+                                        first=0)
+    except KeyError:
+        pass
+    try:
+        updater.job_queue.run_repeating(callback_feeds, interval=(60*10),
+                                        context={"feeds":config["blog_feeds"]},
+                                        first=0)
+    except KeyError:
+        pass
     updater.job_queue.run_repeating(callback_auto_save, interval=(60*10))
     
     updater.start_polling()
