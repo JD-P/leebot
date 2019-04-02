@@ -1,6 +1,8 @@
 from telegram.ext import Updater, CommandHandler
+import telegram
 from typing import Callable
-from urllib.parse import urlparse
+import urllib.request as request
+from urllib.parse import urlparse, urlencode
 import threading
 import feedparser
 import json
@@ -53,7 +55,45 @@ def remind_me(bot, update):
     bot.send_message(chat_id=update.message.from_user.id,
                      text=feedback)
 
+def do_search_ddg(search_string):
+    search_params = {"q":search_string,
+                     "format":"json",
+                     "no_html":1,
+                     "t":"leebot"}
+    
+    search = request.urlopen("https://api.duckduckgo.com/?{}".format(
+        urlencode(search_params))
+    )
+    search_results = json.load(search)
+    if search_results["Abstract"]:
+        return {"summary":search_results["Abstract"],
+                "source":search_results["meta"]["name"]}
+    else:
+        return {
+            "ddg_url":search_results["RelatedTopics"][0]["FirstURL"],
+            "source_url":search_results["AbstractURL"],
+            "summary":search_results["RelatedTopics"][0]["Text"],
+            "source":search_results["meta"]["name"]}
 
+def search_ddg(bot, update):
+    search_string = update.message.text.split("/ddg")[1].strip()
+    try:
+        search_results = do_search_ddg(search_string)
+        response = """
+        <a href="{}">DuckDuckGo Instant Answer:</a>\n\n{}\n(Source: <a href="{}">{}</a>)""".format(
+            search_results["ddg_url"],
+            search_results["summary"],
+            search_results["source_url"],
+            search_results["source"])
+        bot.send_message(chat_id=config["channel_id"],
+                         text=response,
+                         parse_mode="HTML",
+                         disable_notification=True
+            )
+    except telegram.error.BadRequest:
+        update.message.reply_text("No result found.")
+    return
+    
 def validate_feed_add(command: str) -> tuple:
     args = command.split(" ")
     feed_type = args[1]
@@ -198,6 +238,7 @@ def callback_auto_save(bot, job):
 if __name__ == '__main__':
     updater = Updater(config["bot_api_key"])
 
+    updater.dispatcher.add_handler(CommandHandler('ddg', search_ddg))
     updater.dispatcher.add_handler(CommandHandler('remind', remind_me))
     updater.dispatcher.add_handler(CommandHandler('shutdown', shutdown))
     updater.dispatcher.add_handler(CommandHandler('addfeed', add_feed))
